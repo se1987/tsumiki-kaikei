@@ -1,0 +1,163 @@
+-- =============================================================================
+--  減価償却 決算整理仕訳ジェネレータ   ※ schema.sql / financial_statements.sql 前提
+-- =============================================================================
+--  税務の前提(個人事業主・所得税):
+--    - 法定償却方法は「定額法」。定率法は届出書を出した場合のみ選択可。
+--    - 平成19年4月1日以後取得 = 新定額法(残存価額なし、備忘価額1円まで償却)。
+--    - 建物(H10.4.1以後)・建物附属設備/構築物(H28.4.1以後)は定額法のみ。
+--    - 償却率・改定償却率・保証率は「耐用年数等に関する省令」別表による。
+--      下のコードの率は引数で受け取る(別表の値を渡す)。便宜のため定額法のみ
+--      率未指定なら round(1/耐用年数,3) で近似するが、必ず別表で要確認。
+--    - 取得価額10万/20万/30万の判定、措置法28の2(青色30万円特例,年間300万円上限)
+--      は期限・要件があり要確認。ここは「経理方法の選択肢」を提示するに留める。
+--
+--  この層の責務: 償却費(=税務判断の結果)を計算し、決算整理仕訳の材料を吐く。
+--               計算した償却費を transactions/entries に posted すれば、
+--               financial_statements.sql の P/L・B/S に自動的に反映される。
+-- =============================================================================
+
+-- ---------- 1. 取得価額による経理方法の判定(10万/20万/30万) -------------------
+CREATE OR REPLACE FUNCTION classify_depreciation(p_cost bigint, p_is_blue boolean DEFAULT true)
+RETURNS TABLE(treatment text, note text)
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT treatment, note FROM (VALUES
+    ('即時経費(少額減価償却資産)',  '取得価額10万円未満(又は使用可能期間1年未満)。全額その年の経費。償却不要。'),
+    ('一括償却資産(3年均等)',        '10万円以上20万円未満。取得価額÷3を3年で。月割なし・備忘価額なし。'),
+    ('措置法28の2(青色30万円特例)',  '30万円未満かつ青色。全額経費。年間合計300万円まで。期限・要件は要確認。'),
+    ('通常償却(定額法/定率法)',      'いずれの特例も使わない/使えない場合。耐用年数で償却。')
+  ) v(treatment, note)
+  WHERE CASE
+    WHEN p_cost < 100000 THEN treatment = '即時経費(少額減価償却資産)'
+    WHEN p_cost < 200000 THEN treatment IN ('一括償却資産(3年均等)','通常償却(定額法/定率法)')
+                              OR (p_is_blue AND treatment = '措置法28の2(青色30万円特例)')
+    WHEN p_cost < 300000 THEN treatment = '通常償却(定額法/定率法)'
+                              OR (p_is_blue AND treatment = '措置法28の2(青色30万円特例)')
+    ELSE                      treatment = '通常償却(定額法/定率法)'
+  END
+$$;
+
+-- ---------- 2. 定額法スケジュール(個人の既定) -------------------------------
+--  初年度は事業供用月から年末までを月割(供用開始月を1月と数える)。
+--  毎年 取得価額×償却率。最終年は備忘価額1円まで(簿価-1を上限)。
+CREATE OR REPLACE FUNCTION straight_line_schedule(
+  p_cost         bigint,
+  p_start        date,                  -- 事業供用日
+  p_useful_life  int,                   -- 耐用年数(年)
+  p_rate         numeric DEFAULT NULL,  -- 定額法償却率(省令別表)。NULLなら1/n近似
+  p_through_year int     DEFAULT NULL   -- ここまで計算(NULLなら備忘1円まで)
+)
+RETURNS TABLE(fiscal_year int, business_months int, depreciation bigint,
+              accumulated bigint, closing_book_value bigint)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  v_rate   numeric := COALESCE(p_rate, round(1.0 / p_useful_life, 3));
+  v_annual bigint  := floor(p_cost * v_rate)::bigint;   -- 満額(1年)の償却費
+  v_start  int     := EXTRACT(YEAR FROM p_start)::int;
+  v_year   int     := v_start;
+  v_open   bigint  := p_cost;
+  v_acc    bigint  := 0;
+  v_months int;
+  v_charge bigint;
+  v_guard  int := p_useful_life + 5;
+  v_count  int := 0;
+BEGIN
+  WHILE v_open > 1 AND v_count <= v_guard LOOP
+    v_months := CASE WHEN v_year = v_start
+                     THEN 13 - EXTRACT(MONTH FROM p_start)::int ELSE 12 END;
+    v_charge := floor(v_annual * v_months / 12.0)::bigint;
+    IF v_charge > v_open - 1 THEN v_charge := v_open - 1; END IF;  -- 備忘1円
+    IF v_charge < 0 THEN v_charge := 0; END IF;
+    v_acc  := v_acc + v_charge;
+    v_open := v_open - v_charge;
+    fiscal_year := v_year; business_months := v_months;
+    depreciation := v_charge; accumulated := v_acc; closing_book_value := v_open;
+    RETURN NEXT;
+    EXIT WHEN p_through_year IS NOT NULL AND v_year >= p_through_year;
+    v_year := v_year + 1; v_count := v_count + 1;
+  END LOOP;
+END;
+$$;
+
+-- ---------- 3. 定率法(200%)スケジュール(届出時) ----------------------------
+--  通常償却費(期首簿価×償却率)が「償却保証額(取得価額×保証率)」を下回ったら、
+--  その年の期首簿価を改定取得価額として 改定償却率で均等償却に切替(有名な難所)。
+CREATE OR REPLACE FUNCTION declining_balance_schedule(
+  p_cost           bigint,
+  p_start          date,
+  p_useful_life    int,
+  p_rate           numeric,   -- 定率法償却率(別表)
+  p_guarantee_rate numeric,   -- 保証率(別表)
+  p_revised_rate   numeric,   -- 改定償却率(別表)
+  p_through_year   int DEFAULT NULL
+)
+RETURNS TABLE(fiscal_year int, business_months int, depreciation bigint,
+              accumulated bigint, closing_book_value bigint)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  v_start     int := EXTRACT(YEAR FROM p_start)::int;
+  v_year      int := v_start;
+  v_open      bigint := p_cost;
+  v_acc       bigint := 0;
+  v_guarantee bigint := floor(p_cost * p_guarantee_rate)::bigint;  -- 償却保証額
+  v_revbase   bigint := NULL;   -- 改定取得価額(切替後固定)
+  v_months int; v_charge bigint; v_normal bigint;
+  v_guard int := p_useful_life + 5; v_count int := 0;
+BEGIN
+  WHILE v_open > 1 AND v_count <= v_guard LOOP
+    v_months := CASE WHEN v_year = v_start
+                     THEN 13 - EXTRACT(MONTH FROM p_start)::int ELSE 12 END;
+    IF v_revbase IS NULL THEN
+      v_normal := floor(v_open * p_rate * v_months / 12.0)::bigint;
+      IF v_normal >= v_guarantee THEN
+        v_charge := v_normal;                    -- 通常の定率償却
+      ELSE
+        v_revbase := v_open;                     -- 保証額割れ → 均等償却に切替
+        v_charge  := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
+      END IF;
+    ELSE
+      v_charge := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
+    END IF;
+    IF v_charge > v_open - 1 THEN v_charge := v_open - 1; END IF;
+    IF v_charge < 0 THEN v_charge := 0; END IF;
+    v_acc  := v_acc + v_charge;
+    v_open := v_open - v_charge;
+    fiscal_year := v_year; business_months := v_months;
+    depreciation := v_charge; accumulated := v_acc; closing_book_value := v_open;
+    RETURN NEXT;
+    EXIT WHEN p_through_year IS NOT NULL AND v_year >= p_through_year;
+    v_year := v_year + 1; v_count := v_count + 1;
+  END LOOP;
+END;
+$$;
+
+-- ---------- 4. 一括償却資産(3年均等償却)  所得税法施行令139条 ----------------
+--  10万円以上20万円未満。取得価額を3年で均等償却。通常償却と異なり:
+--    ・月割なし(供用が年末でも初年から÷3)  ・備忘価額1円を残さず全額経費化
+--    ・途中除却・売却でも3年償却を継続(個別管理しない)
+--  個人は事業年度=暦年(12月)前提。限度額 = 対象額 × 12/36 = ÷3。
+--  円未満の端数は本実装では3年目で調整して取得価額全額を経費化(ソフト実務に準拠)。
+--  ※備忘価額1円は「通常償却(定額法・定率法/所令120の2)」の限度額(取得価額-1円)の話で、
+--    一括償却資産(所令139)には適用されない。本制度は簿価0まで全額。
+--    根拠: タックスアンサーNo.2100(注2)=一括償却 / No.2106=通常償却(別制度)。
+CREATE OR REPLACE FUNCTION lump_sum_schedule(p_cost bigint, p_start_year int)
+RETURNS TABLE(fiscal_year int, depreciation bigint, accumulated bigint, closing_book_value bigint)
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  v_base   bigint := floor(p_cost / 3.0)::bigint;
+  v_acc    bigint := 0;
+  v_charge bigint;
+  i        int;
+BEGIN
+  FOR i IN 0..2 LOOP
+    IF i < 2 THEN v_charge := v_base;
+    ELSE          v_charge := p_cost - v_acc;     -- 3年目で端数を吸収し全額経費化
+    END IF;
+    v_acc := v_acc + v_charge;
+    fiscal_year := p_start_year + i;
+    depreciation := v_charge;
+    accumulated := v_acc;
+    closing_book_value := p_cost - v_acc;
+    RETURN NEXT;
+  END LOOP;
+END;
+$$;
