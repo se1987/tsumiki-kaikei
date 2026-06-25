@@ -28,6 +28,78 @@ flowchart LR
 
 ---
 
+## データフロー
+
+テーブル・ビュー・関数のレベルで、データがどう流れるかを示します。決算整理は新たな仕訳として `entries` に書き戻され、すべての集計は試算表（`trial_balance`）を経由します。
+
+```mermaid
+flowchart TD
+  subgraph IN["入力：仕訳とマスタ"]
+    ACC[accounts<br/>勘定科目]
+    TXN[transactions<br/>取引]
+    ENT[entries<br/>仕訳明細]
+  end
+
+  subgraph ADJ["決算整理（仕訳を生成し書き戻し）"]
+    FA["fixed_assets<br/>post_depreciation 減価償却"]
+    HH["proration_basis<br/>household_adjustment 家事按分"]
+    INV["inventory / purchase_lots<br/>cogs_closing_entries 売上原価"]
+  end
+
+  subgraph CORE["中核"]
+    TB["trial_balance 試算表"]
+    GL[general_ledger<br/>総勘定元帳]
+    AB["account_balance 残高"]
+  end
+
+  subgraph FS["財務諸表"]
+    PL["profit_loss P/L"]
+    BS["balance_sheet B/S"]
+  end
+
+  subgraph AO["青色決算書"]
+    MAP[account_statement_map<br/>statement_lines]
+    AIS["aozora_income_statement 損益"]
+    ABS["aozora_balance_sheet 貸借"]
+  end
+
+  subgraph TAX["消費税"]
+    TC[tax_categories<br/>税区分マスタ]
+    TBS["tax_base_summary<br/>課税標準集計"]
+    TRR[tax_relief_rules<br/>率・期間]
+    WS["consumption_tax_worksheet<br/>申告書中間表"]
+    CMP["consumption_tax_compare<br/>本則/簡易/2割・3割"]
+  end
+
+  FA --> ENT
+  HH --> ENT
+  INV --> ENT
+
+  ACC --> TB
+  TXN --> TB
+  ENT --> TB
+  ENT --> GL
+  TB --> AB
+
+  TB --> PL
+  AB --> BS
+
+  PL --> AIS
+  BS --> ABS
+  MAP --> AIS
+  MAP --> ABS
+
+  ENT --> TBS
+  TC --> TBS
+  TBS --> WS
+  TRR --> WS
+  WS --> CMP
+```
+
+ポイントは2つです。**(1) 決算整理（減価償却・家事按分・棚卸）は計算結果を仕訳として `entries` に戻す**ため、試算表より下流の集計は一貫した数字を見ます。**(2) 消費税は科目残高ではなく `entries` × `tax_categories`（税区分）から課税標準を組む**ため、所得計算とは独立した経路で集計されます。
+
+---
+
 ## モジュールとロード順
 
 SQL は相互に依存するため、次の順で読み込んでください（`demo/run_demo.py` も同順です）。
