@@ -157,4 +157,4 @@ python demo/run_demo.py
 
 ## ライセンス
 
-（必要に応じて設定してください。例：MIT）
+MIT License。詳細はリポジトリ直下の `LICENSE` を参照してください（著作権者: se1987）。
