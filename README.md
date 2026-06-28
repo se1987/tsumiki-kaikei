@@ -131,11 +131,20 @@ python demo/run_demo.py
 
 ### テスト
 
-減価償却スケジュール（定額・定率の期首/期中/期末取得・一括償却）の回帰テストを `tests/` に置いています。GitHub Actions（`.github/workflows/ci.yml`）で push / pull request ごとに自動実行されます。
+`tests/` 配下に、正常系・異常系・エッジケースを含むテストを置いています。GitHub Actions（`.github/workflows/ci.yml`）で push / pull request ごとに自動実行されます。各テストは `pgserver` でその場に PostgreSQL を起動し、`sql/` をロードして検証します（別途 DB 不要）。
+
+| ファイル | 主な検証内容 |
+|---|---|
+| `tests/test_depreciation_regression.py` | 償却スケジュールの回帰（特に期末取得時の改定切替不具合の再発防止） |
+| `tests/test_classify_depreciation.py` | 取得価額（10万/20万/30万）と青色可否による経理方法判定の境界値 |
+| `tests/test_schedule_edgecases.py` | 定額（償却率NULL/最短2年/期中・期末取得/打切り）・一括・定率の追加ケース |
+| `tests/test_fixed_asset.py` | 別表からの率解決・事業専用割合の按分・自動仕訳の冪等性・率未設定/制約違反の異常系 |
+| `tests/test_schema_constraints.py` | 貸借一致の遅延制約・`amount>0`・監査ログの追記専用・生成列・検索ビュー |
 
 ```bash
 pip install pgserver
-python tests/test_depreciation_regression.py
+python tests/test_depreciation_regression.py   # 個別実行
+for t in tests/test_*.py; do python "$t"; done  # 全実行
 ```
 
 ---

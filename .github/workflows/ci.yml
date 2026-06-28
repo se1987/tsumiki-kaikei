@@ -21,5 +21,13 @@ jobs:
         # pgserver は PostgreSQL バイナリを同梱するため、別途 DB を立てる必要はない。
         run: pip install pgserver
 
-      - name: Run depreciation regression tests
-        run: python tests/test_depreciation_regression.py
+      - name: Run all tests
+        # tests/test_*.py を全て実行し、1つでも失敗したらジョブを失敗させる。
+        run: |
+          rc=0
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            python "$t" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
