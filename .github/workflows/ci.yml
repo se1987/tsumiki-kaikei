@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 減価償却 回帰テスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # pgserver は PostgreSQL バイナリを同梱するため、別途 DB を立てる必要はない。
+        run: pip install pgserver
+
+      - name: Run all tests
+        # tests/test_*.py を全て実行し、失敗したファイルを最後にまとめて報告する。
+        # (pytest 未導入のための簡易ランナー。将来 pytest へ移行すると失敗箇所が
+        #  さらに細かく分かる。失敗ファイル単位の特定はこのループで担保する。)
+        run: |
+          shopt -s nullglob
+          failed=()
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            if python "$t"; then :; else failed+=("$t"); fi
+            echo "::endgroup::"
+          done
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "失敗したテストファイル: ${failed[*]}"
+            exit 1
+          fi
+          echo "全テストファイルがPASSしました"

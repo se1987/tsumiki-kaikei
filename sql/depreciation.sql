@@ -102,20 +102,34 @@ DECLARE
   v_revbase   bigint := NULL;   -- 改定取得価額(切替後固定)
   v_months int; v_charge bigint; v_normal bigint;
   v_guard int := p_useful_life + 5; v_count int := 0;
+  v_rev_n  int := 0;            -- 均等償却(改定後)の経過年数
+  -- 均等償却の年数 = 改定償却率の逆数(改定償却率 = ちょうど 1/残存年数 を切上げた値)。
+  v_rev_m  int := round(1.0 / p_revised_rate)::int;
 BEGIN
   WHILE v_open > 1 AND v_count <= v_guard LOOP
     v_months := CASE WHEN v_year = v_start
                      THEN 13 - EXTRACT(MONTH FROM p_start)::int ELSE 12 END;
     IF v_revbase IS NULL THEN
-      v_normal := floor(v_open * p_rate * v_months / 12.0)::bigint;
+      -- 改定切替の判定は「調整前償却額(=期首簿価×償却率)」の満額で行う。
+      -- 月数按分は最後の償却限度額にだけ掛ける(初年度に按分後の額で比較すると、
+      -- 期末近く取得時に誤って改定へ切り替わるため)。
+      v_normal := floor(v_open * p_rate)::bigint;
       IF v_normal >= v_guarantee THEN
-        v_charge := v_normal;                    -- 通常の定率償却
+        v_charge := floor(v_open * p_rate * v_months / 12.0)::bigint;  -- 通常の定率(限度額に按分)
       ELSE
         v_revbase := v_open;                     -- 保証額割れ → 均等償却に切替
+        v_rev_n   := 1;                          -- 切替年が均等償却の1年目
         v_charge  := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
       END IF;
     ELSE
+      v_rev_n  := v_rev_n + 1;
       v_charge := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
+    END IF;
+    -- 改定(均等)償却の最終年(=残存年数 v_rev_m 年目)は備忘1円まで一括計上し、
+    -- floor の端数(数円)を翌年に繰り越さない。改定償却率×残存年数=ちょうど1.0 になる
+    -- 年数(例: 12年=0.200×5, 17年=0.125×8)で微小テールが出るのを防ぐ。
+    IF v_revbase IS NOT NULL AND v_rev_n >= v_rev_m THEN
+      v_charge := v_open - 1;
     END IF;
     IF v_charge > v_open - 1 THEN v_charge := v_open - 1; END IF;
     IF v_charge < 0 THEN v_charge := 0; END IF;
@@ -161,3 +175,70 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- ---------- 5. 償却率の別表(制度はデータに持たせる) --------------------------
+--  償却率・改定償却率・保証率を、コード/引数でなくテーブルで保持する。
+--  耐用年数省令 別表第八(定額法)・別表第十(200%定率法,平成24年4月1日以後取得)。
+--  ★収録値は国税庁「減価償却資産の償却率等表」(2100_02.pdf)と突合済み
+--    (定額法2〜20年・200%定率法3〜20年。tests/test_depreciation_rates_table.py で固定)。
+--    範囲外(21年以上等)を追記する際は、同表と突合すること。
+--
+--  網羅範囲について:
+--    - 定額法は別表第八の 2〜20年を全て収録。
+--    - 定率法(200%)も別表第十の 3〜20年を収録(2年は償却率1.000で保証率・改定償却率が
+--      無く本表の対象外)。21年以上が必要な場合は別表から追記する。
+--      未収録の年数は asset_schedule() が「別表に未登録」と分かる文言で例外停止する
+--      ため、利用者は『制度上存在しない』のではなく『別表に追記が必要』だと判別できる。
+--    - 検証: 期首取得・取得価額1,000,000円で各年のスケジュールを生成すると、全年が
+--      備忘価額1円まで完全償却し、期首取得は耐用年数ちょうどで完了する
+--      (tests/test_depreciation_rates_table.py / test_declining_balance_matrix.py)。
+--
+--  制度改正(取得日による率の切替)への発展余地:
+--    現状は「平成24年4月1日以後取得の200%定率法」を前提に1世代のみを持つ。将来、
+--    取得日で率が変わる改正(例: 250%→200%)に備えるなら、本表に applicable_from /
+--    applicable_to(適用取得日の期間)列を足し、主キーを (method, useful_life,
+--    applicable_from) に拡張、asset_schedule() 側で取得日が期間に含まれる行を引く、
+--    という拡張で吸収できる(行の追加=制度改正、というデータ駆動の方針を維持できる)。
+CREATE TABLE depreciation_rates (
+  method         text         NOT NULL CHECK (method IN ('定額法','定率法')),
+  useful_life    int          NOT NULL CHECK (useful_life >= 2),
+  rate           numeric(6,5) NOT NULL,   -- 償却率(0.00000〜1.00000)
+  revised_rate   numeric(6,5),            -- 改定償却率(定率法のみ)
+  guarantee_rate numeric(6,5),            -- 保証率  (定率法のみ)
+  PRIMARY KEY (method, useful_life),
+  CHECK ( (method='定率法' AND revised_rate IS NOT NULL AND guarantee_rate IS NOT NULL)
+       OR (method='定額法' AND revised_rate IS NULL AND guarantee_rate IS NULL) )
+);
+COMMENT ON TABLE depreciation_rates IS
+  '耐用年数省令の別表(定額法=別表第八/200%定率法=別表第十)。償却率等をコードから外出ししたもの。定額法は2〜20年、定率法は3〜20年を収録し、国税庁の償却率等表(2100_02.pdf)と突合済み。範囲外を追記する際は同表と要突合。';
+
+-- 定額法(別表第八): 2〜20年を網羅
+INSERT INTO depreciation_rates(method,useful_life,rate) VALUES
+ ('定額法',2,0.500),('定額法',3,0.334),('定額法',4,0.250),('定額法',5,0.200),
+ ('定額法',6,0.167),('定額法',7,0.143),('定額法',8,0.125),('定額法',9,0.112),
+ ('定額法',10,0.100),('定額法',11,0.091),('定額法',12,0.084),('定額法',13,0.077),
+ ('定額法',14,0.072),('定額法',15,0.067),('定額法',16,0.063),('定額法',17,0.059),
+ ('定額法',18,0.056),('定額法',19,0.053),('定額法',20,0.050);
+
+-- 200%定率法(別表第十,平成24年4月1日以後取得): 3〜20年を網羅
+--  各行の (償却率, 改定償却率, 保証率)。期首取得で全年が備忘1円まで完全償却することを
+--  tests/test_depreciation_rates_table.py で機械的に検算している。
+INSERT INTO depreciation_rates(method,useful_life,rate,revised_rate,guarantee_rate) VALUES
+ ('定率法',3,0.667,1.000,0.11089),
+ ('定率法',4,0.500,1.000,0.12499),
+ ('定率法',5,0.400,0.500,0.10800),
+ ('定率法',6,0.333,0.334,0.09911),
+ ('定率法',7,0.286,0.334,0.08680),
+ ('定率法',8,0.250,0.334,0.07909),
+ ('定率法',9,0.222,0.250,0.07126),
+ ('定率法',10,0.200,0.250,0.06552),
+ ('定率法',11,0.182,0.200,0.05992),
+ ('定率法',12,0.167,0.200,0.05566),
+ ('定率法',13,0.154,0.167,0.05180),
+ ('定率法',14,0.143,0.167,0.04854),
+ ('定率法',15,0.133,0.143,0.04565),
+ ('定率法',16,0.125,0.143,0.04294),
+ ('定率法',17,0.118,0.125,0.04038),
+ ('定率法',18,0.111,0.112,0.03884),
+ ('定率法',19,0.105,0.112,0.03693),
+ ('定率法',20,0.100,0.112,0.03486);
