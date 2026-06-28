@@ -69,7 +69,7 @@ CREATE TABLE transactions (
   created_at       timestamptz NOT NULL DEFAULT now(),
   updated_at       timestamptz NOT NULL DEFAULT now()
 );
-COMMENT ON TABLE transactions IS '仕訳のヘッダ。status=posted で貸借一致を強制(下の遅延制約)。確定後の訂正は UPDATE せず逆仕訳(voided+新規)で行い真実性を担保する。';
+COMMENT ON TABLE transactions IS '仕訳のヘッダ。status=posted で貸借一致を強制(下の遅延制約)。確定後の訂正は UPDATE せず逆仕訳(voided+新規)で行い真実性を担保する。posted/voided の書き換え・削除は forbid_posted_txn_change トリガがDB側で拒否する(許可は posted→voided の取消のみ)。';
 
 -- [検索要件] 範囲指定(日付)・相手方・両者の組み合わせ
 CREATE INDEX idx_txn_date          ON transactions (transaction_date);
@@ -266,6 +266,69 @@ CREATE TRIGGER trg_accounts_touch     BEFORE UPDATE ON accounts     FOR EACH ROW
 CREATE TRIGGER trg_transactions_touch BEFORE UPDATE ON transactions FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER trg_entries_touch      BEFORE UPDATE ON entries      FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER trg_documents_touch    BEFORE UPDATE ON documents    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+-- =============================================================================
+--  6.5 真実性(改ざん防止)を「コメント」から「DB制約」へ
+-- =============================================================================
+--  確定(posted)した帳簿本体は物理的に書き換え・削除させない。訂正は元の仕訳を
+--  残したまま「取消(voided)+逆仕訳(新規 posted)」で行う(国税庁の優良電子帳簿が
+--  求める「訂正・削除の履歴」の担保)。許可するのは status を posted→voided にする
+--  「取消」操作のみで、取引内容(日付・相手方・摘要)の書き換えは認めない。
+--
+--  注意: entries.transaction_id は ON DELETE CASCADE だが、posted/voided 取引の
+--        DELETE 自体を下のトリガが拒否するため、確定済み明細が連鎖削除されることは
+--        ない(draft の取消し=破棄では従来どおり連鎖削除される)。
+CREATE OR REPLACE FUNCTION forbid_posted_txn_change() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.status IN ('posted','voided') THEN
+      RAISE EXCEPTION '確定済み取引(status=%)は削除できません。訂正は逆仕訳で行ってください (transaction_id=%)',
+                      OLD.status, OLD.id;
+    END IF;
+    RETURN OLD;
+  END IF;
+
+  -- UPDATE
+  IF OLD.status = 'posted' THEN
+    -- 唯一の許可: posted -> voided の取消(取引内容は据え置き)
+    IF NEW.status = 'voided'
+       AND NEW.transaction_date IS NOT DISTINCT FROM OLD.transaction_date
+       AND NEW.counterparty     IS NOT DISTINCT FROM OLD.counterparty
+       AND NEW.description       IS NOT DISTINCT FROM OLD.description THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION '確定済み取引(posted)は変更できません。許可されるのは status を voided にする取消のみで、内容の訂正は逆仕訳で行ってください (transaction_id=%)',
+                    OLD.id;
+  ELSIF OLD.status = 'voided' THEN
+    RAISE EXCEPTION '取消済み取引(voided)は変更できません (transaction_id=%)', OLD.id;
+  END IF;
+  -- draft は自由(draft -> posted の確定を含む)
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_txn_forbid_posted
+  BEFORE UPDATE OR DELETE ON transactions
+  FOR EACH ROW EXECUTE FUNCTION forbid_posted_txn_change();
+
+-- posted/voided 取引にぶら下がる明細は UPDATE/DELETE 禁止。
+--  INSERT は許可する: 計上処理は「ヘッダを posted で作成 → 明細を追加」という順序で
+--  書くため(貸借一致は遅延制約が COMMIT 時に保証)。確定後の明細の書き換え・削除は
+--  逆仕訳(新規 posted)で行う。
+CREATE OR REPLACE FUNCTION forbid_posted_entry_change() RETURNS trigger AS $$
+DECLARE v_status txn_status;
+BEGIN
+  SELECT status INTO v_status FROM transactions
+   WHERE id = COALESCE(OLD.transaction_id, NEW.transaction_id);
+  IF v_status IN ('posted','voided') THEN
+    RAISE EXCEPTION '確定済み取引(status=%)の仕訳明細は変更・削除できません。訂正は逆仕訳で行ってください (entry_id=%, transaction_id=%)',
+                    v_status, OLD.id, OLD.transaction_id;
+  END IF;
+  RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER trg_entries_forbid_posted
+  BEFORE UPDATE OR DELETE ON entries
+  FOR EACH ROW EXECUTE FUNCTION forbid_posted_entry_change();
 
 -- =============================================================================
 --  7. 集計・派生ビュー  「試算表・元帳・保存期限は実体ではなく算出結果」

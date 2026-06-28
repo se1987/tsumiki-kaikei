@@ -60,7 +60,7 @@ $$;
 -- ---------- 売上税額・仕入税額控除(証憑区分で全額/経過措置を振り分け) --------
 CREATE OR REPLACE FUNCTION output_tax(p_year int)
 RETURNS bigint LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(SUM(COALESCE(e.tax_amount, s.tax_amount)),0)::bigint
+  SELECT COALESCE(SUM(COALESCE(e.tax_amount, s.tax_amount) * tax_sign(tc.applies_to, e.side)),0)::bigint
   FROM entries e
   JOIN transactions t ON t.id=e.transaction_id AND t.status='posted'
                      AND t.transaction_date BETWEEN make_date(p_year,1,1) AND make_date(p_year,12,31)
@@ -73,7 +73,7 @@ $$;
 -- 全額控除(適格・少額特例・公共交通・自販機・従業員旅費)
 CREATE OR REPLACE FUNCTION input_tax_full(p_year int)
 RETURNS bigint LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(SUM(COALESCE(e.tax_amount, s.tax_amount)),0)::bigint
+  SELECT COALESCE(SUM(COALESCE(e.tax_amount, s.tax_amount) * tax_sign(tc.applies_to, e.side)),0)::bigint
   FROM entries e
   JOIN transactions t ON t.id=e.transaction_id AND t.status='posted'
                      AND t.transaction_date BETWEEN make_date(p_year,1,1) AND make_date(p_year,12,31)
@@ -87,8 +87,9 @@ $$;
 -- 経過措置(非適格)。取引日の経過措置率を乗じる
 CREATE OR REPLACE FUNCTION input_tax_transitional(p_year int)
 RETURNS bigint LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(SUM(floor(COALESCE(e.tax_amount, s.tax_amount)
-                            * keizo_measure_rate(t.transaction_date))::bigint),0)::bigint
+  SELECT COALESCE(SUM(tax_sign(tc.applies_to, e.side)
+                      * floor(COALESCE(e.tax_amount, s.tax_amount)
+                              * keizo_measure_rate(t.transaction_date))::bigint),0)::bigint
   FROM entries e
   JOIN transactions t ON t.id=e.transaction_id AND t.status='posted'
                      AND t.transaction_date BETWEEN make_date(p_year,1,1) AND make_date(p_year,12,31)
