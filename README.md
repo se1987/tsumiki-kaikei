@@ -139,6 +139,7 @@ python demo/run_demo.py
 | `tests/test_classify_depreciation.py` | 取得価額（10万/20万/30万）と青色可否による経理方法判定の境界値 |
 | `tests/test_schedule_edgecases.py` | 定額（償却率NULL/最短2年/期中・期末取得/打切り）・一括・定率の追加ケース |
 | `tests/test_fixed_asset.py` | 別表からの率解決・事業専用割合の按分・自動仕訳の冪等性・率未設定/制約違反の異常系 |
+| `tests/test_post_depreciation_accounts.py` | 勘定科目コード欠落時に償却仕訳を沈黙で未計上にせず例外停止する異常系 |
 | `tests/test_schema_constraints.py` | 貸借一致の遅延制約・`amount>0`・監査ログの追記専用・生成列・検索ビュー |
 
 ```bash

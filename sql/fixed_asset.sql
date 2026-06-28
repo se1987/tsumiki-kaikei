@@ -166,6 +166,23 @@ BEGIN
 
     SELECT * INTO d FROM asset_depreciation(fa.id, p_year);
     CONTINUE WHEN COALESCE(d.full_dep,0) = 0;
+    -- [沈黙の未計上を防ぐ] 科目コードが accounts に無いと、下の INSERT...SELECT が
+    --   0行挿入で正常終了し、借方=貸方=0 のため貸借チェックも通過してしまう。
+    --   結果として「償却仕訳が空のまま計上済み扱い(リンクも付与)」になり、後から
+    --   科目を直しても冪等判定で再計上されない。明示的に検証して例外で止める。
+    IF NOT EXISTS (SELECT 1 FROM accounts WHERE code = fa.expense_account_code) THEN
+      RAISE EXCEPTION '減価償却費の勘定科目が存在しません: code=%, asset_id=%',
+                      fa.expense_account_code, fa.id;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM accounts WHERE code = fa.accum_account_code) THEN
+      RAISE EXCEPTION '減価償却累計額の勘定科目が存在しません: code=%, asset_id=%',
+                      fa.accum_account_code, fa.id;
+    END IF;
+    IF d.private_dep > 0
+       AND NOT EXISTS (SELECT 1 FROM accounts WHERE code = p_owner_draw_code) THEN
+      RAISE EXCEPTION '事業主貸の勘定科目が存在しません: code=%, asset_id=%',
+                      p_owner_draw_code, fa.id;
+    END IF;
     -- (1) 償却費を全額認識(簿価は全額減らす)
     INSERT INTO transactions(transaction_date, description, status)
       VALUES (p_date, fa.name || ' 減価償却(決算整理)', 'posted') RETURNING id INTO v_tid;

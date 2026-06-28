@@ -71,9 +71,10 @@ class Checker:
     def true(self, name, cond, detail=""):
         self._record(name, bool(cond), f"        {detail}")
 
-    def error(self, name, sql, substr):
-        """sql が失敗し、stderr に substr を含むことを検査(異常系)。"""
-        r = self.db._run(sql)
+    def error(self, name, sql, substr, db=None):
+        """sql が失敗し、stderr に substr を含むことを検査(異常系)。
+        db を渡すと既定の self.db ではなくそのデータベースに対して実行する。"""
+        r = (db or self.db)._run(sql)
         msg = r.stderr.decode("utf-8")
         passed = r.returncode != 0 and substr in msg
         detail = (f"        期待エラー含む: {substr}\n"
