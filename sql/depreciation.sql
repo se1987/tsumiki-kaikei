@@ -102,6 +102,9 @@ DECLARE
   v_revbase   bigint := NULL;   -- 改定取得価額(切替後固定)
   v_months int; v_charge bigint; v_normal bigint;
   v_guard int := p_useful_life + 5; v_count int := 0;
+  v_rev_n  int := 0;            -- 均等償却(改定後)の経過年数
+  -- 均等償却の年数 = 改定償却率の逆数(改定償却率 = ちょうど 1/残存年数 を切上げた値)。
+  v_rev_m  int := round(1.0 / p_revised_rate)::int;
 BEGIN
   WHILE v_open > 1 AND v_count <= v_guard LOOP
     v_months := CASE WHEN v_year = v_start
@@ -115,10 +118,18 @@ BEGIN
         v_charge := floor(v_open * p_rate * v_months / 12.0)::bigint;  -- 通常の定率(限度額に按分)
       ELSE
         v_revbase := v_open;                     -- 保証額割れ → 均等償却に切替
+        v_rev_n   := 1;                          -- 切替年が均等償却の1年目
         v_charge  := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
       END IF;
     ELSE
+      v_rev_n  := v_rev_n + 1;
       v_charge := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
+    END IF;
+    -- 改定(均等)償却の最終年(=残存年数 v_rev_m 年目)は備忘1円まで一括計上し、
+    -- floor の端数(数円)を翌年に繰り越さない。改定償却率×残存年数=ちょうど1.0 になる
+    -- 年数(例: 12年=0.200×5, 17年=0.125×8)で微小テールが出るのを防ぐ。
+    IF v_revbase IS NOT NULL AND v_rev_n >= v_rev_m THEN
+      v_charge := v_open - 1;
     END IF;
     IF v_charge > v_open - 1 THEN v_charge := v_open - 1; END IF;
     IF v_charge < 0 THEN v_charge := 0; END IF;
@@ -179,9 +190,8 @@ $$;
 --      未収録の年数は asset_schedule() が「別表に未登録」と分かる文言で例外停止する
 --      ため、利用者は『制度上存在しない』のではなく『別表に追記が必要』だと判別できる。
 --    - 検証: 期首取得・取得価額1,000,000円で各年のスケジュールを生成すると、全年が
---      備忘価額1円まで完全償却する(tests/test_depreciation_rates_table.py)。
---      ※12年・17年は「改定償却率×残存年数=ちょうど1.000」になる年で、floor の端数(数円)が
---        最終年の翌年に繰り越される実装上の丸めがある(完全償却・総額は正しい)。
+--      備忘価額1円まで完全償却し、期首取得は耐用年数ちょうどで完了する
+--      (tests/test_depreciation_rates_table.py / test_declining_balance_matrix.py)。
 --
 --  制度改正(取得日による率の切替)への発展余地:
 --    現状は「平成24年4月1日以後取得の200%定率法」を前提に1世代のみを持つ。将来、
