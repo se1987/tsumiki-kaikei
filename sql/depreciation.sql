@@ -107,9 +107,12 @@ BEGIN
     v_months := CASE WHEN v_year = v_start
                      THEN 13 - EXTRACT(MONTH FROM p_start)::int ELSE 12 END;
     IF v_revbase IS NULL THEN
-      v_normal := floor(v_open * p_rate * v_months / 12.0)::bigint;
+      -- 改定切替の判定は「調整前償却額(=期首簿価×償却率)」の満額で行う。
+      -- 月数按分は最後の償却限度額にだけ掛ける(初年度に按分後の額で比較すると、
+      -- 期末近く取得時に誤って改定へ切り替わるため)。
+      v_normal := floor(v_open * p_rate)::bigint;
       IF v_normal >= v_guarantee THEN
-        v_charge := v_normal;                    -- 通常の定率償却
+        v_charge := floor(v_open * p_rate * v_months / 12.0)::bigint;  -- 通常の定率(限度額に按分)
       ELSE
         v_revbase := v_open;                     -- 保証額割れ → 均等償却に切替
         v_charge  := floor(v_revbase * p_revised_rate * v_months / 12.0)::bigint;
@@ -161,3 +164,40 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- ---------- 5. 償却率の別表(制度はデータに持たせる) --------------------------
+--  償却率・改定償却率・保証率を、コード/引数でなくテーブルで保持する。
+--  耐用年数省令 別表第八(定額法)・別表第十(200%定率法,平成24年4月1日以後取得)。
+--  ★値は導入時に国税庁「減価償却資産の償却率等表」の原本と必ず突合すること。
+--    本シードは主要な耐用年数のみ(必要に応じて別表から追記する)。
+CREATE TABLE depreciation_rates (
+  method         text    NOT NULL CHECK (method IN ('定額法','定率法')),
+  useful_life    int     NOT NULL CHECK (useful_life >= 2),
+  rate           numeric NOT NULL,   -- 償却率
+  revised_rate   numeric,            -- 改定償却率(定率法のみ)
+  guarantee_rate numeric,            -- 保証率  (定率法のみ)
+  PRIMARY KEY (method, useful_life),
+  CHECK ( (method='定率法' AND revised_rate IS NOT NULL AND guarantee_rate IS NOT NULL)
+       OR (method='定額法' AND revised_rate IS NULL AND guarantee_rate IS NULL) )
+);
+COMMENT ON TABLE depreciation_rates IS
+  '耐用年数省令の別表(定額法=別表第八/200%定率法=別表第十)。償却率等をコードから外出ししたもの。導入時に国税庁の償却率等表と要突合。';
+
+-- 定額法(別表第八)
+INSERT INTO depreciation_rates(method,useful_life,rate) VALUES
+ ('定額法',2,0.500),('定額法',3,0.334),('定額法',4,0.250),('定額法',5,0.200),
+ ('定額法',6,0.167),('定額法',7,0.143),('定額法',8,0.125),('定額法',9,0.112),
+ ('定額法',10,0.100),('定額法',15,0.067),('定額法',20,0.050);
+
+-- 200%定率法(別表第十)  ※5年・6年は公的資料で値を確認済み
+INSERT INTO depreciation_rates(method,useful_life,rate,revised_rate,guarantee_rate) VALUES
+ ('定率法',3,0.667,1.000,0.11089),
+ ('定率法',4,0.500,1.000,0.12499),
+ ('定率法',5,0.400,0.500,0.10800),
+ ('定率法',6,0.333,0.334,0.09911),
+ ('定率法',7,0.286,0.334,0.08680),
+ ('定率法',8,0.250,0.334,0.07909),
+ ('定率法',9,0.222,0.250,0.07126),
+ ('定率法',10,0.200,0.250,0.06552),
+ ('定率法',15,0.133,0.143,0.04565),
+ ('定率法',20,0.100,0.112,0.03486);

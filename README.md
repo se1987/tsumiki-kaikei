@@ -106,13 +106,13 @@ SQL は相互に依存するため、次の順で読み込んでください（`
 
 | # | ファイル | 役割 |
 |---|---|---|
-| 1 | `sql/schema.sql` | 中核スキーマ。複式簿記（accounts/transactions/entries）、貸借一致制約、監査ログ、証憑保存、試算表・元帳ビュー |
+| 1 | `sql/schema.sql` | 中核スキーマ。複式簿記（accounts/transactions/entries）、貸借一致制約、監査ログ、証憑保存、試算表・元帳ビュー、取引検索ビュー（`transaction_search`） |
 | 2 | `sql/financial_statements.sql` | 試算表（期間指定）、P/L・B/S、貸借均衡の自己検算 |
-| 3 | `sql/depreciation.sql` | 減価償却（定額・定率・一括）のスケジュール計算 |
+| 3 | `sql/depreciation.sql` | 減価償却（定額・定率・一括）のスケジュール計算と、償却率の別表テーブル（`depreciation_rates`） |
 | 4 | `sql/household_proration.sql` | 家事按分（事業割合の計算と決算整理） |
 | 5 | `sql/inventory.sql` | 棚卸・売上原価（三分法） |
 | 6 | `sql/aozora_statement.sql` | 青色決算書への写像（損益・貸借の主要行） |
-| 7 | `sql/fixed_asset.sql` | 固定資産台帳（減価償却の自動仕訳化） |
+| 7 | `sql/fixed_asset.sql` | 固定資産台帳（減価償却の自動仕訳化）、固定資産↔償却仕訳のFKリンク（相互関連性・二重計上防止） |
 | 8 | `sql/tax_categories.sql` | 税区分マスタ（消費税・インボイスの土台） |
 | 9 | `sql/consumption_tax.sql` | 消費税エンジン（本則／簡易／2割・3割特例、経過措置） |
 
@@ -137,6 +137,8 @@ python demo/run_demo.py
 - **貸借一致は `DEFERRABLE INITIALLY DEFERRED` の制約トリガ**で、コミット時にまとめて検査します（確定済みの仕訳のみ対象）。
 - **税区分は「税率」ではなく「申告書への集計ルール」**として設計しています（区分自身が売上/仕入・課税売上/課税仕入への集計可否を持つ）。売上か仕入かを科目タイプで判定しません。
 - **税制の率・期間は `tax_relief_rules` テーブルにデータとして持ち**、計算ロジックには埋め込みません。改正は行の更新で吸収します。
+- **減価償却の償却率・改定償却率・保証率も `depreciation_rates`（別表第八・第十）にデータで持ちます**。同じく「制度はコードでなくデータ」の適用で、資産個別の率指定が無ければ別表から引き、どちらにも無ければ実行時に例外で止めます（沈黙の誤計算を防ぐ）。
+- **固定資産と償却仕訳は `asset_depreciation_postings` で外部キー連結**します。相互関連性を摘要テキストでなく構造で担保し、`UNIQUE(資産, 年度, 種別)` で同年の二重計上をDB側で禁止します。
 
 ---
 

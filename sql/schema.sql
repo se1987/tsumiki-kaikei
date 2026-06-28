@@ -335,3 +335,19 @@ SELECT b.id, b.doc_type, b.legal_basis, b.counterparty, b.amount,
        END AS retention_until                          -- 保存義務の最終日(この日まで保存)
 FROM base b
 LEFT JOIN filing_deadlines fd ON fd.tax_year = b.ref_year;
+
+-- ---------- 検索要件(規5⑤一ハ)の補助ビュー -------------------------------------
+--  entries.amount は明細単位の金額。電帳法の「取引金額」検索を伝票単位でも素直に
+--  書けるよう、伝票(transaction)単位の合計金額(借方合計)を集約する。
+--  これで「日付範囲 AND 取引先 AND 金額範囲」の複合検索が1クエリで書ける。
+--  (取引年月日・取引先には transactions 側に、金額には entries 側に索引済み)
+CREATE OR REPLACE VIEW transaction_search AS
+SELECT t.id,
+       t.transaction_date,
+       t.counterparty,
+       t.description,
+       t.status,
+       COALESCE(SUM(e.amount) FILTER (WHERE e.side='debit'), 0) AS total_amount
+FROM transactions t
+LEFT JOIN entries e ON e.transaction_id = t.id
+GROUP BY t.id, t.transaction_date, t.counterparty, t.description, t.status;
