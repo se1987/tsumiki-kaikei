@@ -143,7 +143,13 @@ RETURNS TABLE(name text, acquired text, cost bigint, method text, useful_life in
               deductible bigint, closing_bv bigint)
 LANGUAGE sql STABLE AS $$
   SELECT fa.name, to_char(fa.service_start_date,'YYYY-MM'), fa.acquisition_cost, fa.method,
-         fa.useful_life, COALESCE(fa.rate, round(1.0/NULLIF(fa.useful_life,0),3)),
+         fa.useful_life,
+         -- 表示償却率は asset_schedule の解決順(資産個別 > 別表 depreciation_rates > 1/n近似)
+         -- と一致させる。台帳の表示率が実計算の率(別表値)とズレないようにする。
+         COALESCE(fa.rate,
+                  (SELECT dr.rate FROM depreciation_rates dr
+                    WHERE dr.method = fa.method AND dr.useful_life = fa.useful_life),
+                  round(1.0/NULLIF(fa.useful_life,0),3)),
          d.full_dep, fa.business_use_ratio, d.business_dep, d.closing_bv
   FROM fixed_assets fa
   CROSS JOIN LATERAL asset_depreciation(fa.id, p_year) d
