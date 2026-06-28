@@ -51,7 +51,7 @@ WITH t AS (
 INSERT INTO entries(transaction_id, account_id, side, amount)
 SELECT t.id, a.id, 'debit', 5000 FROM t, accounts a WHERE a.code='CASH';
 COMMIT;
-""", "貸借不一致")
+""", "貸借不一致", sqlstate="P0001")
 
 # ---------- (異常系) entries.amount は正数のみ ----------
 db.rows("INSERT INTO transactions(transaction_date,status) VALUES ('2024-07-01','draft')")
@@ -59,7 +59,7 @@ chk.error("amount<=0 は CHECK 違反",
           "INSERT INTO entries(transaction_id,account_id,side,amount) "
           "SELECT (SELECT max(id) FROM transactions), a.id,'debit',0 "
           "FROM accounts a WHERE a.code='CASH'",
-          "amount")
+          "amount", sqlstate="23514")
 
 # ---------- (異常系) audit_logs は追記専用(UPDATE/DELETE 禁止) ----------
 #  ここまでの INSERT 群で audit_logs には行が存在する。
@@ -67,10 +67,10 @@ chk.true("audit_logs に記録が存在する",
          int(db.scalar("SELECT count(*) FROM audit_logs")) > 0)
 chk.error("audit_logs の UPDATE は禁止",
           "UPDATE audit_logs SET changed_by='x' WHERE id=(SELECT min(id) FROM audit_logs)",
-          "追記専用")
+          "追記専用", sqlstate="P0001")
 chk.error("audit_logs の DELETE は禁止",
           "DELETE FROM audit_logs WHERE id=(SELECT min(id) FROM audit_logs)",
-          "追記専用")
+          "追記専用", sqlstate="P0001")
 
 # ---------- (正常系/不変条件) 申告期限は休日順延後、土日にならない ----------
 chk.eq("filing_deadlines: 実際の申告期限は土日でない",

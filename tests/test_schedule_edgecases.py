@@ -55,4 +55,11 @@ chk.eq("定率法 4年 期首取得(改定切替あり)",
                "(1000000,'2024-01-01',4,0.500,0.12499,1.000)"),
        [500000, 250000, 125000, 124999])
 
+# ---------- 別表(depreciation_rates)の網羅 ----------
+# 定額法は別表第八の 2〜20年を全て収録していること(欠落=実装漏れを検出)。
+chk.eq("定額法の別表が2〜20年を連続網羅",
+       db.icol("SELECT useful_life FROM depreciation_rates "
+               "WHERE method='定額法' ORDER BY useful_life"),
+       list(range(2, 21)))
+
 chk.done("schedule_edgecases")

@@ -22,12 +22,19 @@ jobs:
         run: pip install pgserver
 
       - name: Run all tests
-        # tests/test_*.py を全て実行し、1つでも失敗したらジョブを失敗させる。
+        # tests/test_*.py を全て実行し、失敗したファイルを最後にまとめて報告する。
+        # (pytest 未導入のための簡易ランナー。将来 pytest へ移行すると失敗箇所が
+        #  さらに細かく分かる。失敗ファイル単位の特定はこのループで担保する。)
         run: |
-          rc=0
+          shopt -s nullglob
+          failed=()
           for t in tests/test_*.py; do
             echo "::group::$t"
-            python "$t" || rc=1
+            if python "$t"; then :; else failed+=("$t"); fi
             echo "::endgroup::"
           done
-          exit $rc
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "失敗したテストファイル: ${failed[*]}"
+            exit 1
+          fi
+          echo "全テストファイルがPASSしました"

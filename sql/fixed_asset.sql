@@ -94,7 +94,11 @@ BEGIN
     v_guar := COALESCE(fa.guarantee_rate, v_guar);
     v_rev  := COALESCE(fa.revised_rate, v_rev);
     IF v_rate IS NULL OR v_guar IS NULL OR v_rev IS NULL THEN
-      RAISE EXCEPTION '定率法の率が未設定です(資産にも別表にも無い): asset_id=%, 耐用年数=%',
+      -- 「制度上存在しない」ではなく「別表(depreciation_rates)に未登録」であることを明示し、
+      -- 国税庁の償却率等表から該当行を追記すれば解決できると分かるようにする。
+      RAISE EXCEPTION '定率法の率が未設定です(資産個別にも別表 depreciation_rates にも無い): '
+                      'asset_id=%, 耐用年数=%。国税庁「減価償却資産の償却率等表」から'
+                      '当該年数の行(率・改定償却率・保証率)を depreciation_rates に追加してください。',
                       p_asset_id, fa.useful_life;
     END IF;
     RETURN QUERY SELECT s.fiscal_year, s.depreciation, s.closing_book_value

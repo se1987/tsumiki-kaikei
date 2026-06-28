@@ -36,20 +36,23 @@ def assert_no_side_effects(name, db):
 
 # --- 1. 全科目欠落: 減価償却費の科目が無い時点で停止 ---
 db1 = scenario("", ratio=1.0)
-chk.error("全科目欠落: 減価償却費の科目欠落で例外", POST, "減価償却費の勘定科目が存在しません", db=db1)
+chk.error("全科目欠落: 減価償却費の科目欠落で例外", POST,
+          "減価償却費の勘定科目が存在しません", sqlstate="P0001", db=db1)
 assert_no_side_effects("全科目欠落", db1)
 
 # --- 2. 累計額科目だけ欠落 ---
 db2 = scenario("INSERT INTO accounts(code,name,account_type) VALUES ('DEP','減価償却費','expense')",
                ratio=1.0)
-chk.error("累計額科目欠落で例外", POST, "減価償却累計額の勘定科目が存在しません", db=db2)
+chk.error("累計額科目欠落で例外", POST,
+          "減価償却累計額の勘定科目が存在しません", sqlstate="P0001", db=db2)
 assert_no_side_effects("累計額科目欠落", db2)
 
 # --- 3. 事業主貸欠落かつ家事使用分あり(business_use_ratio<1) ---
 db3 = scenario("INSERT INTO accounts(code,name,account_type) VALUES "
                "('DEP','減価償却費','expense'),('ACC','減価償却累計額','asset')",
                ratio=0.5)   # private_dep>0 になるので事業主貸が必要
-chk.error("事業主貸欠落(家事分あり)で例外", POST, "事業主貸の勘定科目が存在しません", db=db3)
+chk.error("事業主貸欠落(家事分あり)で例外", POST,
+          "事業主貸の勘定科目が存在しません", sqlstate="P0001", db=db3)
 assert_no_side_effects("事業主貸欠落", db3)
 
 # --- 4. (正常系) 全科目そろっていれば従来どおり計上できる(ガードが happy path を壊さない) ---

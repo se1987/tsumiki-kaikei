@@ -25,7 +25,9 @@ class DB:
                 raise RuntimeError(f"SQL ロード失敗 {f}:\n{r.stderr.decode('utf-8')}")
 
     def _run(self, sql, tuples=False):
-        args = [PSQL, self.uri, "-v", "ON_ERROR_STOP=1"]
+        # VERBOSITY=verbose にすると、エラー出力の先頭に SQLSTATE が
+        #   「ERROR:  23505: ...」の形で載る。異常系を文言でなくコードで検査できる。
+        args = [PSQL, self.uri, "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose"]
         if tuples:
             args += ["-At", "-F", "|"]   # 非整列・タプルのみ・区切り '|'
         return subprocess.run(args, input=sql.encode("utf-8"), capture_output=True)
@@ -71,13 +73,21 @@ class Checker:
     def true(self, name, cond, detail=""):
         self._record(name, bool(cond), f"        {detail}")
 
-    def error(self, name, sql, substr, db=None):
-        """sql が失敗し、stderr に substr を含むことを検査(異常系)。
-        db を渡すと既定の self.db ではなくそのデータベースに対して実行する。"""
+    def error(self, name, sql, substr=None, sqlstate=None, db=None):
+        """sql が失敗することを検査(異常系)。
+        substr   … stderr に含まれるべき文言(任意)
+        sqlstate … 期待する SQLSTATE。例 '23505'(UNIQUE違反)/'23514'(CHECK違反)/
+                   'P0001'(PL/pgSQL の RAISE EXCEPTION 既定)。文言変更に強い検査(任意)。
+        db       … 既定の self.db 以外で実行したい場合に指定。"""
         r = (db or self.db)._run(sql)
         msg = r.stderr.decode("utf-8")
-        passed = r.returncode != 0 and substr in msg
-        detail = (f"        期待エラー含む: {substr}\n"
+        passed = r.returncode != 0
+        wants = []
+        if substr is not None:
+            passed = passed and (substr in msg);          wants.append(f"文言『{substr}』")
+        if sqlstate is not None:
+            passed = passed and (f"ERROR:  {sqlstate}:" in msg); wants.append(f"SQLSTATE={sqlstate}")
+        detail = (f"        期待: {' / '.join(wants) or '失敗すること'}\n"
                   f"        実際(rc={r.returncode}): {msg.strip()[:400] or '(エラー無し)'}")
         self._record(name, passed, detail)
 

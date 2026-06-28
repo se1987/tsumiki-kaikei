@@ -63,7 +63,7 @@ chk.error("UNIQUE で同年同種別の二重計上を拒否",
           "INSERT INTO asset_depreciation_postings(asset_id,transaction_id,fiscal_year,kind) "
           f"SELECT asset_id,transaction_id,fiscal_year,kind FROM asset_depreciation_postings "
           f"WHERE asset_id={asset_a} AND fiscal_year=2024 AND kind='depreciation'",
-          "duplicate key value")
+          "duplicate key value", sqlstate="23505")
 
 # ---------- (異常系) 定率法で率が資産にも別表にも無い → 実行時例外 ----------
 asset_b = db.scalar("""
@@ -75,7 +75,7 @@ RETURNING id;
 """)
 chk.error("定率法で率未設定なら asset_schedule が例外で停止",
           f"SELECT * FROM asset_schedule({asset_b})",
-          "定率法の率が未設定です")
+          "定率法の率が未設定です", sqlstate="P0001")
 
 # ---------- (異常系) fixed_assets の CHECK 制約 ----------
 BASE = ("INSERT INTO fixed_assets"
@@ -85,15 +85,15 @@ BASE = ("INSERT INTO fixed_assets"
 
 chk.error("取得価額0は CHECK 違反",
           BASE.format(cols="", vals="", cost=0, method="定額法"),
-          "acquisition_cost")
+          "acquisition_cost", sqlstate="23514")
 chk.error("事業専用割合>1 は CHECK 違反",
           BASE.format(cols=",business_use_ratio", vals=",1.5", cost=1000, method="定額法"),
-          "business_use_ratio")
+          "business_use_ratio", sqlstate="23514")
 chk.error("事業専用割合0 は CHECK 違反",
           BASE.format(cols=",business_use_ratio", vals=",0", cost=1000, method="定額法"),
-          "business_use_ratio")
+          "business_use_ratio", sqlstate="23514")
 chk.error("未対応の償却方法は CHECK 違反",
           BASE.format(cols="", vals="", cost=1000, method="生産高比例法"),
-          "fixed_assets_method_check")
+          "fixed_assets_method_check", sqlstate="23514")
 
 chk.done("fixed_asset")
