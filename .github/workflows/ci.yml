@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 減価償却 回帰テスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # pgserver は PostgreSQL バイナリを同梱するため、別途 DB を立てる必要はない。
+        run: pip install pgserver
+
+      - name: Run depreciation regression tests
+        run: python tests/test_depreciation_regression.py

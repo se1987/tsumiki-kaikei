@@ -123,11 +123,20 @@ SQL は相互に依存するため、次の順で読み込んでください（`
 PostgreSQL を別途立てなくても、`pgserver` でその場に起動して検証できます。
 
 ```bash
-pip install pgserver --break-system-packages
+pip install pgserver
 python demo/run_demo.py
 ```
 
 `demo/run_demo.py` は、架空のフリーランスエンジニアの1年分（売上・経費・固定資産・家事按分）を流し、**仕訳 → 試算表 → P/L・B/S → 青色決算書 → 固定資産台帳 → 消費税（中間表・3方式）** までをコンソールに出力します。P/L の利益が B/S の純資産に入って貸借が均衡するところまで、数字で追えます。
+
+### テスト
+
+減価償却スケジュール（定額・定率の期首/期中/期末取得・一括償却）の回帰テストを `tests/` に置いています。GitHub Actions（`.github/workflows/ci.yml`）で push / pull request ごとに自動実行されます。
+
+```bash
+pip install pgserver
+python tests/test_depreciation_regression.py
+```
 
 ---
 

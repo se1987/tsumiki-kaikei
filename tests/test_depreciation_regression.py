@@ -1,10 +1,11 @@
 #  減価償却スケジュールの回帰テスト
-#  実行: pip install pgserver --break-system-packages && python test_depreciation_regression.py
+#  実行: pip install pgserver && python tests/test_depreciation_regression.py
 #  目的: 定額法/定率法(期首・期中・期末取得)/一括償却の各スケジュールを期待値で固定する。
 #        特に「期末近く取得時に定率法が誤って改定切替する」不具合の再発を防ぐ。
 import pgserver, pathlib, tempfile, sys
 
-SQLDIR = str(pathlib.Path(__file__).resolve().parent / "sql") + "/"
+# このファイルは tests/ 配下にあるため、sql/ はリポジトリ直下(=親の親)を見る。
+SQLDIR = str(pathlib.Path(__file__).resolve().parent.parent / "sql") + "/"
 db = pgserver.get_server(pathlib.Path(tempfile.mkdtemp(prefix="depreg_")))
 for f in ["schema.sql", "financial_statements.sql", "depreciation.sql"]:
     db.psql(pathlib.Path(SQLDIR + f).read_text())
